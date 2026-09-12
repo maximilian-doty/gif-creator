@@ -5,7 +5,6 @@ import json
 import mimetypes
 import os
 import shutil
-import subprocess
 import sys
 import threading
 import urllib.request
@@ -16,13 +15,14 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import core  # noqa: E402
+import desktop  # noqa: E402
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 CHUNK = 1024 * 256
 MAX_JSON = 200 * 1024 * 1024  # caption PNGs travel inside export requests
 
 MIME_OVERRIDES = {".mkv": "video/webm", ".m4v": "video/mp4", ".m4a": "audio/mp4", ".ts": "video/mp2t", ".mts": "video/mp2t",
-                  ".js": "text/javascript", ".webp": "image/webp"}
+                  ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".webp": "image/webp"}
 
 
 class ApiError(Exception):
@@ -68,6 +68,9 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "File not found or not in a library folder")
         return str(Path(path).resolve())
 
+    def _body_path(self, req):
+        return self._path_param({"path": [req.get("path", "")]})
+
     def _send_file(self, path, cache=False):
         size = os.path.getsize(path)
         ext = Path(path).suffix.lower()
@@ -112,7 +115,7 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def _dispatch(self, routes):
@@ -129,7 +132,13 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, "Not found")
         except ApiError as e:
             self._json({"error": str(e)}, e.status)
-        except (BrokenPipeError, ConnectionResetError):
+        except core.NotConfigured as e:
+            self._json({"error": str(e), "needs_setup": True}, 409)
+        except desktop.Unsupported as e:
+            self._json({"error": str(e)}, 501)
+        except ValueError as e:
+            self._json({"error": str(e)}, 400)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
         except Exception as e:
             self._json({"error": str(e)}, 500)
@@ -156,9 +165,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------------- GET routes
 
+    def get_settings(self, q):
+        self._json(core.settings_info())
+
     def get_library(self, q):
         self._json({"items": core.scan_library(), "exports": core.list_exports(),
-                    "folders": [str(d) for d in core.library_dirs()]})
+                    "folders": [str(d) for d in core.library_dirs()], "platform": core.PLATFORM})
 
     def get_media(self, q):
         self._send_file(self._path_param(q))
@@ -194,8 +206,18 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------------------------------------------------------------- POST routes
 
+    def post_settings(self, q):
+        req = self._read_json()
+        core.save_settings(req.get("save_dir"), req.get("library_dirs"))
+        self._json(core.settings_info())
+
+    def post_choose_folder(self, q):
+        path = desktop.choose_folder(self._read_json().get("start"))
+        self._json({"path": path} if path else {"canceled": True})
+
     def post_download(self, q):
         req = self._read_json()
+        core.media_dir()  # needs setup first
         core.ts_to_seconds(req.get("section_start"))  # validate early so errors show inline
         core.ts_to_seconds(req.get("section_end"))
         job = core.Job("download", req.get("url", "")).run(core.download, req)
@@ -203,24 +225,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_export(self, q):
         req = self._read_json()
-        req["path"] = self._path_param({"path": [req.get("path", "")]})
+        req["path"] = self._body_path(req)
+        core.export_dir()
         job = core.Job("export", os.path.basename(req["path"])).run(core.export, req)
         self._json(job.to_dict())
 
     def post_frame(self, q):
         req = self._read_json()
-        req["path"] = self._path_param({"path": [req.get("path", "")]})
+        req["path"] = self._body_path(req)
         self._json(core.export_frame(req))
 
     def post_proxy(self, q):
-        req = self._read_json()
-        path = self._path_param({"path": [req.get("path", "")]})
+        path = self._body_path(self._read_json())
         job = core.Job("proxy", os.path.basename(path)).run(core.make_proxy, path)
         self._json(job.to_dict())
 
     def post_preview_audio(self, q):
-        req = self._read_json()
-        path = self._path_param({"path": [req.get("path", "")]})
+        path = self._body_path(self._read_json())
         job = core.Job("audio", os.path.basename(path)).run(core.make_preview_audio, path)
         self._json(job.to_dict())
 
@@ -235,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         if Path(name).suffix.lower() not in core.VIDEO_EXTS:
             raise ApiError(400, "That file type isn't a supported video")
         length = int(self.headers.get("Content-Length") or 0)
-        dest = core.unique_path(core.MEDIA_DIR, name)
+        dest = core.unique_path(core.media_dir(), name)
         tmp = dest.with_name("." + dest.name + ".part")
         with open(tmp, "wb") as f:
             remaining = length
@@ -252,49 +273,39 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"path": str(dest), "name": dest.name})
 
     def post_open_dialog(self, q):
-        script = ('POSIX path of (choose file with prompt "Choose a video to make a GIF from" '
-                  'of type {"public.movie", "public.mpeg-4", "org.matroska.mkv", "org.webmproject.webm"})')
-        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        if r.returncode != 0:
+        chosen = desktop.choose_file("video")
+        if not chosen:
             return self._json({"canceled": True})
-        path = str(Path(r.stdout.strip()).resolve())
+        path = str(Path(chosen).resolve())
         core.remember_opened(path)
         self._json({"path": path, "name": os.path.basename(path)})
 
     def post_subs_choose(self, q):
-        script = ('POSIX path of (choose file with prompt "Choose a subtitle file (.srt, .vtt, .ass)" '
-                  'default location (path to downloads folder))')
-        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-        if r.returncode != 0:
+        chosen = desktop.choose_file("subtitle")
+        if not chosen:
             return self._json({"canceled": True})
-        path = str(Path(r.stdout.strip()).resolve())
+        path = str(Path(chosen).resolve())
         if Path(path).suffix.lower() not in core.SUB_EXTS:
             raise ApiError(400, "That isn't a subtitle file. Pick a .srt, .vtt, .ass, or .ssa file.")
         core.remember_subtitle(path)
         self._json({"id": "file:" + path, "name": os.path.basename(path)})
 
     def post_reveal(self, q):
-        path = self._path_param({"path": [self._read_json().get("path", "")]})
-        subprocess.run(["open", "-R", path])
+        desktop.reveal(self._body_path(self._read_json()))
         self._json({"ok": True})
 
     def post_copy(self, q):
-        path = self._path_param({"path": [self._read_json().get("path", "")]})
-        r = subprocess.run(["osascript", "-e", "on run argv", "-e",
-                            "set the clipboard to (POSIX file (item 1 of argv))", "-e", "end run", path],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            raise ApiError(500, r.stderr.strip() or "Could not copy to clipboard")
+        desktop.copy_file(self._body_path(self._read_json()))
         self._json({"ok": True})
 
     def post_open_folder(self, q):
         which = self._read_json().get("folder")
-        target = core.EXPORT_DIR if which == "exports" else core.MEDIA_DIR
-        subprocess.run(["open", str(target)])
+        desktop.open_folder(core.export_dir() if which == "exports" else core.media_dir())
         self._json({"ok": True})
 
 
 GET_ROUTES = {
+    "/api/settings": Handler.get_settings,
     "/api/library": Handler.get_library,
     "/api/media": Handler.get_media,
     "/api/thumb": Handler.get_thumb,
@@ -305,6 +316,8 @@ GET_ROUTES = {
     "/api/subs/cues": Handler.get_sub_cues,
 }
 POST_ROUTES = {
+    "/api/settings": Handler.post_settings,
+    "/api/choose-folder": Handler.post_choose_folder,
     "/api/download": Handler.post_download,
     "/api/export": Handler.post_export,
     "/api/frame": Handler.post_frame,
@@ -319,6 +332,12 @@ POST_ROUTES = {
     "/api/open-folder": Handler.post_open_folder,
 }
 
+INSTALL_HINTS = {
+    "mac": {"ffmpeg": "brew install ffmpeg", "yt-dlp": "brew install yt-dlp"},
+    "windows": {"ffmpeg": "winget install Gyan.FFmpeg", "yt-dlp": "winget install yt-dlp.yt-dlp"},
+    "linux": {"ffmpeg": "sudo apt install ffmpeg", "yt-dlp": "python3 -m pip install --user yt-dlp"},
+}
+
 
 def already_running(url):
     try:
@@ -330,16 +349,19 @@ def already_running(url):
 
 def main():
     ap = argparse.ArgumentParser(description="GIF Creator local server")
-    ap.add_argument("--port", type=int, default=core.CONFIG.get("port", 8765))
+    ap.add_argument("--port", type=int, default=core.config().get("port", 8765))
     ap.add_argument("--no-open", action="store_true", help="don't open a browser tab")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    missing = [t for t in ("ffmpeg", "ffprobe", "yt-dlp") if not shutil.which(t)]
-    if missing:
-        print(f"Missing tools: {', '.join(missing)}. Install with: brew install {' '.join(missing)}")
-        if "ffmpeg" in missing or "ffprobe" in missing:
-            sys.exit(1)
+    hints = INSTALL_HINTS[core.PLATFORM]
+    if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        print("GIF Creator needs ffmpeg, which isn't installed (or isn't on your PATH yet).")
+        print(f"Install it with:  {hints['ffmpeg']}")
+        print("Then close this window, open a new one, and start GIF Creator again.")
+        sys.exit(1)
+    if not core.ytdlp_command():
+        print(f"Note: yt-dlp isn't installed, so pasting links won't work. Install it with:  {hints['yt-dlp']}")
 
     url = f"http://127.0.0.1:{args.port}/"
     if already_running(url):
@@ -348,9 +370,15 @@ def main():
             webbrowser.open(url)
         return
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError:
+        print(f"Port {args.port} is in use by another program. Start GIF Creator with a different one, "
+              f"for example:  python app/server.py --port {args.port + 1}")
+        sys.exit(1)
     httpd.daemon_threads = True
-    print(f"GIF Creator running at {url}  (Ctrl+C to stop)")
+    print(f"GIF Creator is running at {url}")
+    print("Keep this window open while you use it. Close it or press Ctrl+C to stop.")
     if not args.no_open:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:

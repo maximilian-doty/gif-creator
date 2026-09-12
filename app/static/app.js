@@ -71,6 +71,7 @@ async function refreshLibrary() {
     const sig = JSON.stringify([data.items, data.exports]);
     if (sig === S.librarySig) return;
     S.librarySig = sig;
+    S.platform = data.platform;
     S.library = data.items;
     S.exports = data.exports;
     renderLibrary();
@@ -110,10 +111,10 @@ function renderLibrary() {
     const isVideo = item.name.endsWith('.mp4');
     li.innerHTML = `<img class="lib-thumb" loading="lazy" alt="" src="${isVideo ? `/api/thumb?path=${enc(item.path)}` : mediaUrl(item.path)}">
       <div><div class="lib-name"></div><div class="lib-meta"></div>
-      <div class="exp-actions"><button class="link" data-act="copy">Copy file</button><button class="link" data-act="reveal">Show in Finder</button></div></div>`;
+      <div class="exp-actions">${canCopy() ? '<button class="link" data-act="copy">Copy file</button>' : ''}<button class="link" data-act="reveal">${revealLabel()}</button></div></div>`;
     li.querySelector('.lib-name').textContent = item.name;
     li.querySelector('.lib-meta').textContent = `${fmtBytes(item.size)}, ${fmtAgo(item.mtime)}`;
-    li.querySelector('[data-act=copy]').addEventListener('click', () => copyFile(item.path));
+    li.querySelector('[data-act=copy]')?.addEventListener('click', () => copyFile(item.path));
     li.querySelector('[data-act=reveal]').addEventListener('click', () => reveal(item.path));
     return li;
   }));
@@ -133,7 +134,7 @@ function setTab(tab) {
 }
 
 async function copyFile(path) {
-  try { await api('/api/copy', { json: { path } }); toast('Copied. Paste it into Slack, Messages, or a folder.'); }
+  try { await api('/api/copy', { json: { path } }); toast('Copied. Paste it into a chat app or a folder.'); }
   catch (err) { toast(err.message, { error: true }); }
 }
 async function reveal(path) {
@@ -942,9 +943,101 @@ $('#export-cancel').addEventListener('click', () => { if (S.exportJobId) api('/a
 $('#res-copy').addEventListener('click', () => S.lastResult && copyFile(S.lastResult.path));
 $('#res-reveal').addEventListener('click', () => S.lastResult && reveal(S.lastResult.path));
 
+// ================================================================ settings (first run and the Settings button)
+
+function revealLabel() {
+  if (S.platform === 'mac') return 'Show in Finder';
+  return S.platform === 'windows' ? 'Show in File Explorer' : 'Show in folder';
+}
+
+function canCopy() {
+  return S.platform !== 'linux';
+}
+
+function applyPlatform() {
+  $('#res-reveal').textContent = revealLabel();
+  $('#res-copy').hidden = !canCopy();
+  $$('.mod-key').forEach((k) => { k.textContent = S.platform === 'mac' ? '⌘' : 'Ctrl'; });
+}
+
+async function loadSettings() {
+  try {
+    const s = await api('/api/settings');
+    S.platform = s.platform;
+    applyPlatform();
+    if (!s.configured) openSetup(s, { firstRun: true });
+  } catch (err) {
+    toast(`Couldn't load settings: ${err.message}`, { error: true });
+  }
+}
+
+function openSetup(s, { firstRun = false } = {}) {
+  S.setupFirstRun = firstRun;
+  $('#setup-title').textContent = firstRun ? 'Welcome to GIF Creator' : 'Settings';
+  $('#setup-dir').value = s.save_dir || s.suggested_save_dir;
+  $('#setup-note').textContent = firstRun ? '' : 'Changing the folder only affects new files. Files you already saved stay where they are.';
+  const chosen = new Set(s.library_dirs);
+  $('#setup-libs').replaceChildren(...s.library_options.filter((o) => o.exists).map((o) => {
+    const label = document.createElement('label');
+    label.className = 'check';
+    label.innerHTML = '<input type="checkbox"><span></span>';
+    const box = label.querySelector('input');
+    box.value = o.path;
+    box.checked = chosen.has(o.path);
+    label.querySelector('span').textContent = o.path;
+    return label;
+  }));
+  $('#setup-cancel').hidden = firstRun;
+  $('#setup-submit').textContent = firstRun ? 'Start using GIF Creator' : 'Save';
+  $('#setup').hidden = false;
+  $('#setup-dir').focus();
+}
+
+$('#setup-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const button = $('#setup-submit');
+  button.disabled = true;
+  try {
+    const s = await api('/api/settings', {
+      json: { save_dir: $('#setup-dir').value, library_dirs: $$('#setup-libs input:checked').map((i) => i.value) },
+    });
+    $('#setup').hidden = true;
+    S.librarySig = null;
+    await refreshLibrary();
+    toast(S.setupFirstRun ? `Your files will be saved in ${s.save_dir}.` : 'Settings saved.');
+  } catch (err) {
+    toast(err.message, { error: true });
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#setup-choose').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/choose-folder', { json: { start: $('#setup-dir').value } });
+    if (r.path) $('#setup-dir').value = r.path;
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+});
+
+$('#setup-cancel').addEventListener('click', () => { $('#setup').hidden = true; });
+
+$('#settings-btn').addEventListener('click', async () => {
+  try {
+    openSetup(await api('/api/settings'));
+  } catch (err) {
+    toast(err.message, { error: true });
+  }
+});
+
 // ================================================================ keyboard
 
 document.addEventListener('keydown', (e) => {
+  if (!$('#setup').hidden) {
+    if (e.key === 'Escape' && !S.setupFirstRun) $('#setup').hidden = true;
+    return;
+  }
   const typing = e.target.closest('input, textarea, select, [contenteditable]');
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'e') { e.preventDefault(); doExport(); return; }
   if (e.key === 'Escape') {
@@ -974,10 +1067,13 @@ document.addEventListener('keydown', (e) => {
 
 $$('.tab').forEach((t) => t.addEventListener('click', () => setTab(t.dataset.tab)));
 $('#lib-search').addEventListener('input', (e) => { S.filter = e.target.value; renderLibrary(); });
-$('#open-exports').addEventListener('click', () => api('/api/open-folder', { json: { folder: 'exports' } }));
+$('#open-exports').addEventListener('click', () => {
+  api('/api/open-folder', { json: { folder: 'exports' } }).catch((err) => toast(err.message, { error: true }));
+});
 window.addEventListener('focus', refreshLibrary);
 
 syncOutputControls();
+loadSettings();
 refreshLibrary();
 api('/api/jobs').then(({ jobs }) => {
   for (const j of jobs) {

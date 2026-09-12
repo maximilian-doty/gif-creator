@@ -1,25 +1,53 @@
 // Captions are drawn with the same function for the live preview and for export,
 // so what you see over the video is exactly what ends up in the GIF.
 
-export const FONTS = [
+// Fonts that come with macOS or Windows. The font menu lists only the ones this computer has.
+const FONT_CHOICES = [
   { name: 'Impact', weight: 400 },
+  { name: 'Arial Black', weight: 900 },
   { name: 'Helvetica Neue', weight: 700 },
+  { name: 'Segoe UI', weight: 700 },
+  { name: 'Arial', weight: 700 },
   { name: 'Avenir Next', weight: 700 },
   { name: 'Futura', weight: 700 },
-  { name: 'Arial Black', weight: 900 },
+  { name: 'Verdana', weight: 700 },
+  { name: 'Trebuchet MS', weight: 700 },
   { name: 'Georgia', weight: 700 },
   { name: 'American Typewriter', weight: 600 },
+  { name: 'Courier New', weight: 700 },
   { name: 'Marker Felt', weight: 700 },
+  { name: 'Segoe Print', weight: 700 },
   { name: 'Chalkboard SE', weight: 700 },
   { name: 'Comic Sans MS', weight: 700 },
   { name: 'Menlo', weight: 700 },
+  { name: 'Consolas', weight: 700 },
 ];
 
+/** A font is installed if text set in it measures differently from every generic fallback. */
+function isInstalled(name) {
+  const ctx = document.createElement('canvas').getContext('2d');
+  const sample = 'mmmmmmmmmwwwwwlli10';
+  return ['monospace', 'serif', 'sans-serif'].some((fallback) => {
+    ctx.font = `48px ${fallback}`;
+    const plain = ctx.measureText(sample).width;
+    ctx.font = `48px "${name}", ${fallback}`;
+    return ctx.measureText(sample).width !== plain;
+  });
+}
+
+export const FONTS = FONT_CHOICES.filter((f) => isInstalled(f.name));
+
+/** The first of these fonts this computer has. */
+function firstFont(...names) {
+  const f = names.map((n) => FONTS.find((x) => x.name === n)).find(Boolean) || { name: names.at(-1), weight: 700 };
+  return { font: f.name, weight: f.weight };
+}
+
 export const PRESETS = {
-  meme:     { font: 'Impact', weight: 400, size: 11, color: '#ffffff', stroke: '#000000', strokeW: 16, box: false, upper: true, shadow: false },
-  subtitle: { font: 'Helvetica Neue', weight: 700, size: 6.5, color: '#ffffff', stroke: '#000000', strokeW: 13, box: false, upper: false, shadow: true },
-  label:    { font: 'Avenir Next', weight: 700, size: 6, color: '#ffffff', stroke: '#000000', strokeW: 0, box: true, upper: false, shadow: false },
-  marker:   { font: 'Marker Felt', weight: 700, size: 8.5, color: '#ffe45c', stroke: '#1a1a1a', strokeW: 12, box: false, upper: false, shadow: false },
+  meme:     { ...firstFont('Impact', 'Arial Black'), size: 11, color: '#ffffff', stroke: '#000000', strokeW: 16, box: false, upper: true, shadow: false },
+  subtitle: { ...firstFont('Helvetica Neue', 'Segoe UI', 'Arial'), size: 6.5, color: '#ffffff', stroke: '#000000', strokeW: 13, box: false, upper: false, shadow: true },
+  label:    { ...firstFont('Avenir Next', 'Segoe UI', 'Arial'), size: 6, color: '#ffffff', stroke: '#000000', strokeW: 0, box: true, upper: false, shadow: false },
+  marker:   { ...firstFont('Marker Felt', 'Segoe Print', 'Comic Sans MS'), size: 8.5, color: '#ffe45c', stroke: '#1a1a1a', strokeW: 12, box: false, upper: false, shadow: false },
 };
 
 export const ALIGN_Y = { top: 0.05, middle: 0.5, bottom: 0.94 };
@@ -62,7 +90,7 @@ export function drawCaption(ctx, cap, W, H, { alpha = 1 } = {}) {
   const px = (cap.size / 100) * H;
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.font = `${cap.weight} ${px}px "${cap.font}", "Helvetica Neue", "Apple Color Emoji", sans-serif`;
+  ctx.font = `${cap.weight} ${px}px "${cap.font}", "Helvetica Neue", "Segoe UI", Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const lines = wrap(ctx, text, W * 0.92);

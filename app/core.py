@@ -3,21 +3,21 @@
 import base64
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-MEDIA_DIR = ROOT / "media"
-EXPORT_DIR = ROOT / "exports"
-CACHE_DIR = ROOT / ".cache"
-CONFIG_PATH = ROOT / "config.json"
+IS_MAC = sys.platform == "darwin"
+IS_WINDOWS = os.name == "nt"
+PLATFORM = "mac" if IS_MAC else "windows" if IS_WINDOWS else "linux"
 
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".flv", ".wmv",
               ".mpg", ".mpeg", ".ts", ".m2ts", ".mts", ".3gp", ".ogv"}
@@ -25,43 +25,145 @@ TEXT_SUB_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text", "srt"}
 BROWSER_AUDIO_CODECS = {"aac", "mp3", "opus", "vorbis", "flac"}
 SUB_EXTS = {".srt", ".vtt", ".ass", ".ssa"}
 
-for d in (MEDIA_DIR, EXPORT_DIR, CACHE_DIR / "thumbs", CACHE_DIR / "proxy", CACHE_DIR / "audio", CACHE_DIR / "jobs"):
+
+# ---------------------------------------------------------------- where things live
+
+def _app_dirs():
+    """(settings folder, cache folder) in each OS's usual place, so settings survive updating the app folder."""
+    override = os.environ.get("GIF_CREATOR_HOME")
+    if override:
+        base = Path(override).expanduser()
+        return base, base / "cache"
+    home = Path.home()
+    if IS_MAC:
+        return home / "Library/Application Support/GIF Creator", home / "Library/Caches/GIF Creator"
+    if IS_WINDOWS:
+        roaming = Path(os.environ.get("APPDATA") or home / "AppData/Roaming")
+        local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData/Local")
+        return roaming / "GIF Creator", local / "GIF Creator" / "Cache"
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")
+    return config_home / "gif-creator", cache_home / "gif-creator"
+
+
+CONFIG_DIR, CACHE_DIR = _app_dirs()
+CONFIG_PATH = CONFIG_DIR / "config.json"
+OPENED_PATH = CONFIG_DIR / "opened.json"
+CHOSEN_SUBS_PATH = CONFIG_DIR / "chosen_subtitles.json"
+VIDEOS_FOLDER = "Movies" if IS_MAC else "Videos"
+
+for d in (CONFIG_DIR, CACHE_DIR / "thumbs", CACHE_DIR / "proxy", CACHE_DIR / "audio", CACHE_DIR / "jobs"):
     d.mkdir(parents=True, exist_ok=True)
 
 
-# ---------------------------------------------------------------- config
+class NotConfigured(Exception):
+    pass
 
-def load_config():
-    cfg = {
-        "port": 8765,
-        "library_dirs": ["~/Downloads", "~/Movies", "~/Desktop"],
-    }
-    if CONFIG_PATH.exists():
+
+def default_library_dirs():
+    return [str(Path.home() / name) for name in ("Downloads", VIDEOS_FOLDER, "Desktop")]
+
+
+def suggested_save_dir():
+    return str(Path.home() / VIDEOS_FOLDER / "GIF Creator")
+
+
+_config = None
+_config_lock = threading.Lock()
+
+
+def config():
+    global _config
+    if _config is None:
+        cfg = {"port": 8765, "save_dir": None, "library_dirs": default_library_dirs()}
         try:
-            cfg.update(json.loads(CONFIG_PATH.read_text()))
+            cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             pass
+        _config = cfg
+    return _config
+
+
+def is_configured():
+    return bool(config().get("save_dir"))
+
+
+def save_settings(save_dir, chosen_library_dirs):
+    """Store the folders picked on the setup screen. Raises ValueError with a message for the person."""
+    global _config
+    raw = str(save_dir or "").strip()
+    if not raw:
+        raise ValueError("Choose a folder for your files.")
+    base = Path(os.path.expanduser(raw))
+    if not base.is_absolute():
+        raise ValueError(f"Use a full folder path, like {suggested_save_dir()}")
+    try:
+        for sub in ("Exports", "Downloads"):
+            (base / sub).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise ValueError(f"GIF Creator can't create folders in {base} ({e.strerror or e}). Pick another folder.")
+    dirs = []
+    for d in chosen_library_dirs or []:
+        p = Path(os.path.expanduser(str(d)))
+        if p.is_absolute() and p.is_dir() and str(p) not in dirs:
+            dirs.append(str(p))
+    with _config_lock:
+        cfg = dict(config(), save_dir=str(base.resolve()), library_dirs=dirs)
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        _config = cfg
     return cfg
 
 
-CONFIG = load_config()
-OPENED_PATH = CACHE_DIR / "opened.json"
-CHOSEN_SUBS_PATH = CACHE_DIR / "chosen_subtitles.json"
+def settings_info():
+    cfg = config()
+    chosen = [os.path.expanduser(d) for d in cfg.get("library_dirs", [])]
+    options = list(dict.fromkeys(default_library_dirs() + chosen))
+    return {"configured": is_configured(), "save_dir": cfg.get("save_dir"), "suggested_save_dir": suggested_save_dir(),
+            "library_dirs": chosen, "platform": PLATFORM,
+            "library_options": [{"path": p, "name": Path(p).name, "exists": Path(p).is_dir()} for p in options]}
+
+
+def _save_subfolder(name):
+    base = config().get("save_dir")
+    if not base:
+        raise NotConfigured("Choose where GIF Creator saves files first. Click Settings.")
+    folder = Path(base) / name
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def export_dir():
+    return _save_subfolder("Exports")
+
+
+def media_dir():
+    return _save_subfolder("Downloads")
+
+
 _opened_lock = threading.Lock()
 
 
 def library_dirs():
-    dirs = [MEDIA_DIR]
-    for d in CONFIG.get("library_dirs", []):
+    dirs = [media_dir().resolve()] if is_configured() else []
+    for d in config().get("library_dirs", []):
         p = Path(os.path.expanduser(d)).resolve()
         if p.is_dir() and p not in dirs:
             dirs.append(p)
     return dirs
 
 
+def ytdlp_command():
+    """yt-dlp as installed on PATH, or the Python module if it was installed with pip. None if missing."""
+    if shutil.which("yt-dlp"):
+        return ["yt-dlp"]
+    if importlib.util.find_spec("yt_dlp"):
+        return [sys.executable, "-m", "yt_dlp"]
+    return None
+
+
 def _recall(store):
     try:
-        return [p for p in json.loads(store.read_text()) if os.path.isfile(p)]
+        return [p for p in json.loads(store.read_text(encoding="utf-8")) if os.path.isfile(p)]
     except (OSError, ValueError):
         return []
 
@@ -70,7 +172,7 @@ def _remember(store, path):
     with _opened_lock:
         items = [p for p in _recall(store) if p != path]
         items.insert(0, path)
-        store.write_text(json.dumps(items[:50]))
+        store.write_text(json.dumps(items[:50]), encoding="utf-8")
 
 
 def opened_files():
@@ -97,7 +199,8 @@ def is_allowed(path):
         return False
     if not real.is_file():
         return False
-    for root in library_dirs() + [EXPORT_DIR, CACHE_DIR]:
+    roots = library_dirs() + [CACHE_DIR] + ([export_dir()] if is_configured() else [])
+    for root in roots:
         if real.is_relative_to(root):
             return True
     return str(real) in opened_files()
@@ -120,8 +223,9 @@ def scan_library():
         items.append({"path": rp, "name": os.path.basename(rp), "folder": label,
                       "size": st.st_size, "mtime": st.st_mtime})
 
+    downloads = media_dir().resolve() if is_configured() else None
     for d in library_dirs():
-        label = "Downloaded" if d == MEDIA_DIR else d.name
+        label = "Downloaded" if d == downloads else d.name
         base_depth = len(d.parts)
         for dirpath, dirnames, filenames in os.walk(d):
             dirnames[:] = [n for n in dirnames if not n.startswith(".") and not n.endswith((".app", ".photoslibrary"))]
@@ -137,8 +241,10 @@ def scan_library():
 
 
 def list_exports():
+    if not is_configured():
+        return []
     out = []
-    for p in EXPORT_DIR.iterdir():
+    for p in export_dir().iterdir():
         if p.suffix.lower() in (".gif", ".mp4", ".webp", ".png") and not p.name.startswith("."):
             st = p.stat()
             out.append({"path": str(p), "name": p.name, "size": st.st_size, "mtime": st.st_mtime})
@@ -478,7 +584,7 @@ def export_frame(req):
 
     stem = safe_filename(Path(info["name"]).stem, "frame")[:60]
     minutes, seconds = divmod(t, 60)
-    out_path = unique_path(EXPORT_DIR, f"{stem} frame {int(minutes)}m{seconds:05.2f}s.png")
+    out_path = unique_path(export_dir(), f"{stem} frame {int(minutes)}m{seconds:05.2f}s.png")
     work = CACHE_DIR / "jobs" / uuid.uuid4().hex[:12]
     work.mkdir(parents=True, exist_ok=True)
     try:
@@ -572,7 +678,7 @@ def export(job, req):
 
         stem = safe_filename(Path(req.get("name") or info["name"]).stem, "clip")[:60]
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        out_path = unique_path(EXPORT_DIR, f"{stem} {stamp}.{fmt}")
+        out_path = unique_path(export_dir(), f"{stem} {stamp}.{fmt}")
 
         job.message = "Rendering frames"
         inter = work / "frames.mkv"
@@ -645,8 +751,11 @@ def download(job, req):
         raise ValueError("Paste a link that starts with http:// or https://")
     sec_start = ts_to_seconds(req.get("section_start"))
     sec_end = ts_to_seconds(req.get("section_end"))
-    cmd = ["yt-dlp", "--newline", "--progress", "--no-simulate", "--no-playlist", "--no-mtime",
-           "--no-colors", "-P", str(MEDIA_DIR), "-o", "%(title).80B [%(id)s].%(ext)s",
+    ytdlp = ytdlp_command()
+    if not ytdlp:
+        raise RuntimeError("yt-dlp isn't installed, so links can't be downloaded. See the README for how to install it.")
+    cmd = [*ytdlp, "--newline", "--progress", "--no-simulate", "--no-playlist", "--no-mtime",
+           "--no-colors", "-P", str(media_dir()), "-o", "%(title).80B [%(id)s].%(ext)s",
            "-S", "res:1080,vcodec:h264,acodec:aac,ext:mp4:m4a", "--merge-output-format", "mp4",
            "--progress-template",
            f"download:{PROGRESS_TAG}|%(progress.status)s|%(progress.downloaded_bytes)s|"
@@ -663,7 +772,8 @@ def download(job, req):
     cmd += ["--", url]
 
     job.message = "Looking up video"
-    job.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    job.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace")
     final_path, tail = None, []
     for line in job.proc.stdout:
         line = line.rstrip("\n")

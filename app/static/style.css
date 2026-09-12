@@ -317,6 +317,26 @@ label.check input:disabled + span { color: var(--faint); }
 }
 .toast.error { background: var(--danger); color: #2a0d08; }
 
+/* first-run setup and Settings */
+.setup { position: fixed; inset: 0; z-index: 55; display: grid; place-items: center; padding: 20px; background: rgba(15, 16, 19, .8); }
+.setup-card {
+  width: min(560px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+}
+.setup-card h1 { font: 700 22px/1.2 var(--brand); margin: 0; }
+.setup-card > p { margin: 0; color: var(--muted); }
+.setup-card strong { color: var(--paper); font-weight: 600; }
+.setup-card .hint:empty { display: none; }
+.setup-label { color: var(--paper); font-weight: 600; margin-top: 8px; font-size: 13px; }
+.path-row { display: flex; gap: 8px; }
+.path-row input { flex: 1; }
+.setup-libs { border: 0; padding: 0; margin: 8px 0 0; }
+.setup-libs legend { color: var(--paper); font-weight: 600; padding: 0; margin-bottom: 8px; font-size: 13px; }
+#setup-libs { display: flex; flex-direction: column; gap: 7px; }
+#setup-libs label { word-break: break-all; }
+.setup-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 220px minmax(0, 1fr) 300px; }
   .brand { width: 206px; }

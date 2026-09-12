@@ -29,6 +29,7 @@
   </form>
 
   <button id="open-btn" class="btn ghost">Open file…</button>
+  <button id="settings-btn" class="btn ghost">Settings</button>
 </header>
 
 <main class="layout">
@@ -57,7 +58,7 @@
         <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Step one frame (hold Shift for one second)</dd></div>
         <div><dt><kbd>T</kbd></dt><dd>Add text at the playhead</dd></div>
         <div><dt><kbd>F</kbd></dt><dd>Save the frame on screen as a PNG</dd></div>
-        <div><dt><kbd>⌘</kbd> <kbd>E</kbd></dt><dd>Export</dd></div>
+        <div><dt><kbd class="mod-key">⌘</kbd> <kbd>E</kbd></dt><dd>Export</dd></div>
       </dl>
     </div>
 
@@ -264,6 +265,27 @@
     </div>
   </aside>
 </main>
+
+<div id="setup" class="setup" hidden>
+  <form id="setup-form" class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <h1 id="setup-title">Welcome to GIF Creator</h1>
+    <p>Pick a folder for your files. Finished GIFs, MP4s and frames go in an <strong>Exports</strong> folder inside it, and videos you download or drop in go in <strong>Downloads</strong>.</p>
+    <label for="setup-dir" class="setup-label">Save files in</label>
+    <div class="path-row">
+      <input id="setup-dir" required spellcheck="false" autocomplete="off">
+      <button type="button" id="setup-choose" class="btn">Choose…</button>
+    </div>
+    <p class="hint" id="setup-note"></p>
+    <fieldset class="setup-libs">
+      <legend>Also list videos from</legend>
+      <div id="setup-libs"></div>
+    </fieldset>
+    <div class="setup-actions">
+      <button type="button" id="setup-cancel" class="btn ghost">Cancel</button>
+      <button type="submit" id="setup-submit" class="btn primary">Start using GIF Creator</button>
+    </div>
+  </form>
+</div>
 
 <div id="drop" class="drop" hidden><div>Drop to add this video to your library</div></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
