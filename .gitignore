@@ -1,0 +1,11 @@
+# Your videos, finished GIFs, and generated caches stay on this Mac
+media/
+exports/
+.cache/
+config.json
+
+# Local tooling
+__pycache__/
+*.pyc
+.DS_Store
+.claude/settings.local.json
