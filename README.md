@@ -111,3 +111,7 @@ Only your computer can open GIF Creator: it listens on `127.0.0.1`, never on you
 - **A link won't download**: sites change often, so update yt-dlp with `brew upgrade yt-dlp` (macOS) or `winget upgrade yt-dlp.yt-dlp` (Windows).
 - **"Port 8765 is in use"**: start GIF Creator on another port. In the GIF Creator folder, run `python3 app/server.py --port 8766` (macOS) or `py app\server.py --port 8766` (Windows).
 - **The launcher doesn't open**: run GIF Creator from a terminal instead. In the GIF Creator folder, run `python3 app/server.py` (macOS) or `py app\server.py` (Windows). Any error appears there.
+
+## License
+
+GIF Creator is released under the [MIT License](LICENSE). ffmpeg and yt-dlp are separate projects with their own licenses.
