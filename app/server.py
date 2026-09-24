@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import shutil
+import socket
 import sys
 import threading
 import urllib.request
@@ -339,20 +340,49 @@ INSTALL_HINTS = {
 }
 
 
-def already_running(url):
+PORT_TRIES = 20
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # On Windows, SO_REUSEADDR lets two programs share a port, which would hide a conflict.
+    allow_reuse_address = not core.IS_WINDOWS
+
+
+def _in_use(port):
+    """Whether some program already accepts connections on this port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _is_gif_creator(port):
     try:
-        with urllib.request.urlopen(url + "api/jobs", timeout=1) as r:
-            return r.status == 200
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/jobs", timeout=1) as r:
+            return r.headers.get("Server", "").startswith("GIFCreator")
     except OSError:
         return False
 
 
+def _open_server(ports):
+    """Bind the first free port in `ports`, skipping ones other programs hold."""
+    for port in ports:
+        if _in_use(port):
+            continue
+        try:
+            return Server(("127.0.0.1", port), Handler), port
+        except OSError:
+            continue
+    return None, None
+
+
 def main():
     ap = argparse.ArgumentParser(description="GIF Creator local server")
-    ap.add_argument("--port", type=int, default=core.config().get("port", 8765))
+    ap.add_argument("--port", type=int, help="port to use (default: the one used last time, else 8765)")
     ap.add_argument("--no-open", action="store_true", help="don't open a browser tab")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)  # show messages right away, even when output goes to a log
 
     hints = INSTALL_HINTS[core.PLATFORM]
     if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
@@ -363,20 +393,29 @@ def main():
     if not core.ytdlp_command():
         print(f"Note: yt-dlp isn't installed, so pasting links won't work. Install it with:  {hints['yt-dlp']}")
 
-    url = f"http://127.0.0.1:{args.port}/"
-    if already_running(url):
+    # Prefer the port used last time: the browser keeps saved edits separately for each address.
+    base = args.port or core.config().get("port", 8765)
+    preferred = args.port or core.config().get("last_port") or base
+    ports = list(dict.fromkeys([preferred, *range(base, base + PORT_TRIES)]))
+
+    running = next((p for p in ports if _in_use(p) and _is_gif_creator(p)), None)
+    if running:
+        url = f"http://127.0.0.1:{running}/"
         print(f"GIF Creator is already running at {url}")
         if not args.no_open:
             webbrowser.open(url)
         return
 
-    try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    except OSError:
-        print(f"Port {args.port} is in use by another program. Start GIF Creator with a different one, "
-              f"for example:  python app/server.py --port {args.port + 1}")
+    httpd, port = _open_server(ports)
+    if not httpd:
+        print(f"Ports {base} to {base + PORT_TRIES - 1} are all in use by other programs. "
+              f"Start GIF Creator on another one, for example:  python app/server.py --port 9000")
         sys.exit(1)
-    httpd.daemon_threads = True
+    if port != preferred:
+        print(f"Another program is using port {preferred}, so GIF Creator is using {port} instead.")
+    if not args.port:
+        core.remember_port(port)
+    url = f"http://127.0.0.1:{port}/"
     print(f"GIF Creator is running at {url}")
     print("Keep this window open while you use it. Close it or press Ctrl+C to stop.")
     if not args.no_open:

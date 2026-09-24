@@ -103,13 +103,15 @@ Before downloading, open **Options** and set *Only download from … to …* (fo
 
 The thumbnails folder is safe to delete. Preview copies are made for video or sound your browser can't play, such as DTS or AC3 audio.
 
+HDR videos (such as 4K Blu-ray rips with HDR10 or Dolby Vision) are converted to ordinary colors when you export, since GIFs, PNGs and MP4s for sharing can't show HDR. Exports may look a little less bright than the HDR preview.
+
 Only your computer can open GIF Creator: it listens on `127.0.0.1`, never on your network.
 
 ## Troubleshooting
 
 - **"GIF Creator needs ffmpeg"**: install ffmpeg (see above), close the window, and start GIF Creator again. On Windows, a Terminal window that was already open won't see newly installed tools, so open a new one.
 - **A link won't download**: sites change often, so update yt-dlp with `brew upgrade yt-dlp` (macOS) or `winget upgrade yt-dlp.yt-dlp` (Windows).
-- **"Port 8765 is in use"**: start GIF Creator on another port. In the GIF Creator folder, run `python3 app/server.py --port 8766` (macOS) or `py app\server.py --port 8766` (Windows).
+- **It opened at a different address, like `127.0.0.1:8766`**: another program was using GIF Creator's usual port (8765), so it picked the next free one. It keeps using that address next time, because text and clip settings you're working on are saved by the browser separately for each address.
 - **The launcher doesn't open**: run GIF Creator from a terminal instead. In the GIF Creator folder, run `python3 app/server.py` (macOS) or `py app\server.py` (Windows). Any error appears there.
 
 ## License

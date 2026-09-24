@@ -23,6 +23,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".flv", ".wmv",
               ".mpg", ".mpeg", ".ts", ".m2ts", ".mts", ".3gp", ".ogv"}
 TEXT_SUB_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt", "text", "srt"}
 BROWSER_AUDIO_CODECS = {"aac", "mp3", "opus", "vorbis", "flac"}
+HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}  # HDR10 / Dolby Vision base layers, and HLG
 SUB_EXTS = {".srt", ".vtt", ".ass", ".ssa"}
 
 
@@ -112,6 +113,17 @@ def save_settings(save_dir, chosen_library_dirs):
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
         _config = cfg
     return cfg
+
+
+def remember_port(port):
+    """Reuse this port next time so the browser finds the edits it saved for this address."""
+    global _config
+    with _config_lock:
+        if config().get("last_port") == port:
+            return
+        cfg = dict(config(), last_port=port)
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        _config = cfg
 
 
 def settings_info():
@@ -316,6 +328,11 @@ def probe(path):
             return 0
 
     duration = float(data.get("format", {}).get("duration") or v.get("duration") or 0)
+    transfer = v.get("color_transfer")
+    hdr = None
+    if transfer in HDR_TRANSFERS:
+        hdr = {"transfer": transfer, "matrix": v.get("color_space") or "bt2020nc",
+               "primaries": v.get("color_primaries") or "bt2020"}
     audio = [s for s in streams if s.get("codec_type") == "audio"]
     main_audio = next((s for s in audio if s.get("disposition", {}).get("default")), audio[0] if audio else None)
     result = {
@@ -329,6 +346,7 @@ def probe(path):
         "height": disp_h,
         "fps": rate(v.get("avg_frame_rate")) or rate(v.get("r_frame_rate")) or 30,
         "vcodec": v.get("codec_name"),
+        "hdr": hdr,
         "sar": sar,
         "size": st.st_size,
         "subtitle_streams": [
@@ -341,6 +359,17 @@ def probe(path):
     return result
 
 
+def sdr_filters(info):
+    """Tone-map HDR video to ordinary colors. GIF, PNG, WebP and H.264 can't carry HDR, so without
+    this, frames from 4K HDR movies come out grey and washed out."""
+    hdr = info.get("hdr")
+    if not hdr:
+        return []
+    return [f"zscale=tin={hdr['transfer']}:min={hdr['matrix']}:pin={hdr['primaries']}:rin=tv:t=linear:npl=100",
+            "format=gbrpf32le", "zscale=p=bt709", "tonemap=tonemap=mobius:desat=0",
+            "zscale=t=bt709:m=bt709:r=tv", "format=yuv420p"]
+
+
 def file_key(path, *extra):
     st = os.stat(path)
     return hashlib.sha1(f"{path}|{st.st_mtime}|{st.st_size}|{extra}".encode()).hexdigest()[:20]
@@ -350,14 +379,18 @@ _thumb_sem = threading.Semaphore(4)
 
 
 def thumbnail(path):
-    out = CACHE_DIR / "thumbs" / f"{file_key(path)}.jpg"
+    out = CACHE_DIR / "thumbs" / f"{file_key(path, 'sdr')}.jpg"
     if out.exists():
         return out
+    try:
+        vf = ",".join(["scale=320:-2", *sdr_filters(probe(path))])
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+        vf = "scale=320:-2"
     with _thumb_sem:
         for seek in ("2", "0"):
             subprocess.run(
                 ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", seek, "-i", path,
-                 "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(out)],
+                 "-frames:v", "1", "-vf", vf, "-q:v", "5", str(out)],
                 capture_output=True, timeout=60)
             if out.exists() and out.stat().st_size > 0:
                 return out
@@ -366,7 +399,7 @@ def thumbnail(path):
 
 def filmstrip(path, count=16):
     """One sprite image of `count` evenly spaced frames, used behind the timeline."""
-    out = CACHE_DIR / "thumbs" / f"{file_key(path, 'strip', count)}.jpg"
+    out = CACHE_DIR / "thumbs" / f"{file_key(path, 'strip', count, 'sdr')}.jpg"
     if out.exists():
         return out
     info = probe(path)
@@ -376,7 +409,8 @@ def filmstrip(path, count=16):
     args = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for i in range(count):
         args += ["-ss", f"{dur * (i + 0.5) / count:.3f}", "-i", path]
-    parts = [f"[{i}:v]scale={frame_w}:{frame_h},setsar=1,trim=end_frame=1[f{i}]" for i in range(count)]
+    per_frame = ",".join([f"trim=end_frame=1,scale={frame_w}:{frame_h},setsar=1", *sdr_filters(info)])
+    parts = [f"[{i}:v]{per_frame}[f{i}]" for i in range(count)]
     graph = ";".join(parts) + ";" + "".join(f"[f{i}]" for i in range(count)) + f"hstack=inputs={count}[out]"
     with _thumb_sem:
         r = subprocess.run(args + ["-filter_complex", graph, "-map", "[out]", "-frames:v", "1",
@@ -479,7 +513,7 @@ def run_ffmpeg(job, args, total_seconds=None, lo=0.0, hi=1.0, cwd=None):
 # ---------------------------------------------------------------- proxy (for formats the browser can't play)
 
 def proxy_path(path):
-    return CACHE_DIR / "proxy" / f"{file_key(path, 'with-audio')}.mp4"
+    return CACHE_DIR / "proxy" / f"{file_key(path, 'with-audio', 'sdr')}.mp4"
 
 
 def preview_audio_path(path):
@@ -499,7 +533,7 @@ def make_proxy(job, path):
     info = probe(path)
     tmp = out.with_suffix(".part.mp4")
     job.message = "Converting for preview"
-    run_ffmpeg(job, ["-i", path, "-map", "0:v:0", "-vf", "scale=-2:'min(720,ih)'",
+    run_ffmpeg(job, ["-i", path, "-map", "0:v:0", "-vf", ",".join(["scale=-2:'min(720,ih)'", *sdr_filters(info)]),
                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", "-g", "12",
                      "-pix_fmt", "yuv420p", *_aac_args(info), "-movflags", "+faststart", str(tmp)],
                total_seconds=info["duration"])
@@ -580,7 +614,7 @@ def export_frame(req):
     t = num(req.get("time"), 0, info["duration"], 0)
     rect = crop_rect(info, req.get("crop"))
     w, h = rect[:2] if rect else (info["width"], info["height"])
-    chain = display_filters(info) + (["crop={}:{}:{}:{}".format(*rect)] if rect else [])
+    chain = display_filters(info) + (["crop={}:{}:{}:{}".format(*rect)] if rect else []) + sdr_filters(info)
 
     stem = safe_filename(Path(info["name"]).stem, "frame")[:60]
     minutes, seconds = divmod(t, 60)
@@ -648,6 +682,7 @@ def export(job, req):
         if rect:
             chain.append("crop={}:{}:{}:{}".format(*rect))
         chain.append(f"scale={out_w}:{out_h}:flags=lanczos,setsar=1")
+        chain += sdr_filters(info)  # after scaling, so tone mapping runs on small frames
 
         inputs = ["-ss", f"{start:.3f}", "-t", f"{clip:.3f}", "-i", src]
         graph = [f"[0:v]{','.join(chain)}[b0]"]
@@ -853,6 +888,15 @@ def write_srt(cues):
                      for i, c in enumerate(cues, 1))
 
 
+def looks_rolling(cues):
+    """YouTube auto-captions repeat the previous line at the top of nearly every cue. Ordinary
+    subtitles only do that when a line is really said twice, which must be kept."""
+    if len(cues) < 10:
+        return False
+    repeats = sum(1 for a, b in zip(cues, cues[1:]) if b["text"].splitlines()[0] in a["text"].splitlines())
+    return repeats / (len(cues) - 1) > 0.3
+
+
 def clean_rolling_captions(cues):
     """YouTube auto-captions repeat the previous line in each cue; keep only the new text."""
     out, prev_lines = [], set()
@@ -916,7 +960,7 @@ def subtitle_cues(path, source):
     else:
         raise ValueError("Unknown subtitle source")
     cues = [c for c in parse_srt(text) if not CREDIT_CUE.search(c["text"])]
-    return clean_rolling_captions(cues)
+    return clean_rolling_captions(cues) if looks_rolling(cues) else cues
 
 
 def _ffmpeg_to_srt(args):
