@@ -52,6 +52,10 @@ export const PRESETS = {
 
 export const ALIGN_Y = { top: 0.05, middle: 0.5, bottom: 0.94 };
 
+/** What "Apply style to all text" copies. Wording, timing and position stay with each line. */
+const STYLE_KEYS = ['preset', 'font', 'weight', 'size', 'color', 'stroke', 'strokeW', 'box', 'upper', 'shadow'];
+export const styleOf = (cap) => Object.fromEntries(STYLE_KEYS.map((k) => [k, cap[k]]));
+
 let nextId = 1;
 
 export function newCaption({ preset = 'subtitle', start = 0, end = 2, text = '', align } = {}) {

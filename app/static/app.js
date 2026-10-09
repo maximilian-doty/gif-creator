@@ -1,5 +1,5 @@
 import { $, $$, api, enc, mediaUrl, clamp, fmtTime, parseTime, fmtBytes, fmtAgo, toast, store } from './api.js';
-import { FONTS, ALIGN_Y, newCaption, applyPreset, captionPNG, drawCaption, isVisibleAt } from './captions.js';
+import { FONTS, ALIGN_Y, newCaption, applyPreset, captionPNG, drawCaption, isVisibleAt, styleOf } from './captions.js';
 import { Timeline } from './timeline.js';
 import { Stage } from './stage.js';
 
@@ -310,6 +310,7 @@ async function openVideo(path) {
   S.end = clamp(sess?.end ?? Math.min(info.duration, 4), S.start + 0.1, info.duration);
   S.captions = sess?.captions || [];
   S.selectedId = null;
+  clearStyleUndo();
 
   stage.load(info.width, info.height);
   if (sess?.crop && sess.aspect !== 'full') {
@@ -636,6 +637,7 @@ function renderCaptions() {
 }
 
 function selectCaption(id) {
+  if (id !== S.selectedId) clearStyleUndo();
   S.selectedId = id;
   renderCaptions();
   fillEditor();
@@ -663,6 +665,7 @@ function fillEditor() {
   $('#cap-upper').checked = c.upper;
   $$('#cap-presets button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.preset === c.preset)));
   $$('#cap-align button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.align === c.align)));
+  $('#cap-style-all').disabled = S.captions.length < 2 && !styleUndo;
 }
 
 function addCaption() {
@@ -712,6 +715,42 @@ $$('#cap-align button').forEach((b) => b.addEventListener('click', () => updateS
   c.x = 0.5;
   c.y = ALIGN_Y[c.align];
 }, { full: true })));
+
+// Copy the selected line's look to every other line. Afterwards the button offers Undo for 10 seconds.
+let styleUndo = null;
+let styleUndoTimer;
+
+function clearStyleUndo() {
+  styleUndo = null;
+  clearTimeout(styleUndoTimer);
+  $('#cap-style-all').textContent = 'Apply style to all text';
+}
+
+function applyStyleToAll() {
+  if (styleUndo) {
+    const n = styleUndo.length;
+    styleUndo.forEach(({ cap, style }) => Object.assign(cap, style));
+    clearStyleUndo();
+    renderCaptions();
+    fillEditor();
+    saveSessionSoon();
+    toast(`Undid the style change on ${n} line${n === 1 ? '' : 's'}.`);
+    return;
+  }
+  const source = selected();
+  if (!source) return;
+  const others = S.captions.filter((c) => c !== source);
+  if (!others.length) return;
+  const style = styleOf(source);
+  styleUndo = others.map((cap) => ({ cap, style: styleOf(cap) }));
+  others.forEach((c) => Object.assign(c, style));
+  renderCaptions();
+  saveSessionSoon();
+  $('#cap-style-all').textContent = 'Undo';
+  styleUndoTimer = setTimeout(clearStyleUndo, 10000);
+  toast(`Applied this style to ${others.length} other line${others.length === 1 ? '' : 's'}.`);
+}
+$('#cap-style-all').addEventListener('click', applyStyleToAll);
 
 function capTimeField(id, key) {
   $(id).addEventListener('change', (e) => {

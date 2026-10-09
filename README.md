@@ -61,7 +61,7 @@ Download the ZIP again and replace the old folder (or run `git pull` if you clon
 1. **Pick a video.** The library lists videos from the folders you chose. You can also paste a link into the top bar, click **Open file…**, or drop a video onto the window.
 2. **Set the clip.** Drag the yellow handles on the filmstrip, or press <kbd>I</kbd> and <kbd>O</kbd> at the playhead. Scroll over the timeline to zoom.
 3. **Crop** (optional). Drag the edges of the video, or pick a shape: 1:1, 4:5, 16:9, or 9:16.
-4. **Add text.** Press <kbd>T</kbd>, type, and drag the text on the video to place it. Styles: Meme, Subtitle, Label, and Marker. Each line of text also appears as a bar in the **Text** row under the filmstrip: click one to jump to it and edit it, drag it to move it in time, or drag its ends to change how long it shows.
+4. **Add text.** Press <kbd>T</kbd>, type, and drag the text on the video to place it. Styles: Meme, Subtitle, Label, and Marker. To give every line the same look, style one and click **Apply style to all text**; each line keeps its own wording, timing, and position. Each line of text also appears as a bar in the **Text** row under the filmstrip: click one to jump to it and edit it, drag it to move it in time, or drag its ends to change how long it shows.
 5. **Export.** Choose GIF, MP4, or WebP, plus a width and frame rate, then click **Export** (or press <kbd>⌘E</kbd> on macOS, <kbd>Ctrl+E</kbd> on Windows). MP4s include the video's sound unless you untick **Include sound**; speed and boomerang apply to the sound too. **Copy file** puts the finished file on your clipboard, ready to paste into a chat app or a folder.
 
 Text is drawn by the browser and burned into the frames, so the preview matches the export exactly.

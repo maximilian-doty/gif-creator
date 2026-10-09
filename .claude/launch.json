@@ -4,8 +4,8 @@
     {
       "name": "gif-creator",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["app/server.py", "--no-open"],
-      "port": 8765
+      "runtimeArgs": ["app/server.py", "--no-open", "--port", "8766"],
+      "port": 8766
     }
   ]
 }

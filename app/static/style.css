@@ -287,7 +287,7 @@ kbd { font: 600 11.5px/1 var(--ui); border: 1px solid var(--line); border-bottom
 .cap-item .when { color: var(--faint); font-variant-numeric: tabular-nums; }
 .cap-editor { display: flex; flex-direction: column; gap: 9px; padding: 10px; background: var(--bench); border-radius: var(--radius-m); border: 1px solid var(--line); }
 .cap-editor input:not([type=checkbox]):not([type=range]):not([type=color]), .cap-editor select, .cap-editor textarea { background: var(--panel); }
-.cap-editor .link.danger { align-self: flex-start; }
+.cap-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .subs-picker {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 6px; align-items: end;
   padding: 10px; background: var(--bench); border: 1px solid var(--line); border-radius: var(--radius-m);
